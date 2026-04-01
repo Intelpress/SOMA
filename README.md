@@ -1,3 +1,211 @@
+# SOMA: Active Memory Orientation System in Natural Language for Constrained Hardware
+
+**Juan José Arellano**
+Educator, Independent Researcher — Quintero, Chile
+intelpress.4.0@gmail.com
+March 2026
+
+---
+
+## Abstract
+
+SOMA (Active Memory Orientation System) is a personal agent that operates entirely on local Markdown files, designed to run on modest hardware (a ThinkPad T460 with 8 GB of RAM, no GPU) using core-utils utilities (bash, curl, jq, lynx) and publicly accessible APIs. Its architecture separates the engine (soma.sh) from the behavior harness (soma.json), allowing the agent's personality and rules to be modified without touching any code. SOMA implements three layers of temporary memory—current session, session closings (cross-session continuity), and, in the future, semantic search—and guarantees that no write to the knowledge base occurs without explicit user confirmation (Supervised Synapse protocol). This article describes the design decisions, architecture, and results of the defined evaluation protocol, providing a verifiable foundation for building sovereign personal agents with minimal resources.
+
+---
+
+## 1. Introduction
+
+We live in an era where AI assistants promise to manage our personal information, but almost always demand expensive hardware, permanent cloud connectivity, or monthly subscriptions. For those who research or produce knowledge from peripheral economies, without institutional infrastructure or budget for specialized hardware, these tools remain out of reach—deepening a digital divide that undermines research and development for actors in the Global South, and the discovery of talent for the Global North.
+
+Current artificial intelligence tools typically require costly hardware, constant cloud connectivity, or subscriptions, placing them beyond the reach of those who work with modest equipment, value their privacy, and lack the economic resources to meet these requirements. The same is true of the construction of massive, expensive data centers, which significantly strain water and energy resources, affecting the communities and territories where they are installed.
+
+On the other hand, personal knowledge management (PKM) tools like Obsidian were born as plain-text databases based on the Zettelkasten method. Their primary function was to store and connect notes by creating manual links between them (bidirectionality) and to visualize the contents of a folder by displaying knowledge graphs so that the user—not the machine—could find the connections. Today, it is possible to turn Obsidian into an "active second brain" with reasoning capabilities through third-party extensions, or by building your own personal agent in a local and sovereign manner.
+
+SOMA was created to occupy that space. It is a personal agent that:
+
+- Runs on a nearly decade-old laptop (no GPU).
+- Stores all knowledge in local Markdown, under the user's control.
+- Uses free, auditable tools.
+- Implements Supervised Synapse: the user controls what information the agent receives and what is written to the vault.
+
+**What does "in natural language" mean?**
+
+In SOMA, both the interaction with the user and the definition of agent behavior are carried out through plain text. No complex commands or code are needed: the user writes phrases like "Remember that the key is in the configuration file" or "What documents talk about the SOMA project?", and the agent responds in Spanish. Furthermore, the agent's personality and rules are written in a JSON file in natural language (the harness), which allows its behavior to be modified without touching the engine.
+
+---
+
+## 2. Hardware and Technology Stack
+
+- **Hardware:** Lenovo ThinkPad T460, Intel Core i5-6200U, 8 GB RAM, 234 GB hard drive. No GPU.
+- **Operating system:** MX-Linux 26.3 "Libretto" (non-systemd).
+- **Tools:** bash, curl, jq, lynx, grep (all available in standard repositories).
+- **Inference:** Groq API (llama-3.3-70b-versatile). Fallback via OpenRouter: meta-llama/llama-3.3-70b-instruct:free → qwen/qwen3-235b-a22b:free → deepseek/deepseek-chat-v3-0324:free.
+
+---
+
+## 3. Architecture
+
+SOMA consists of three clearly differentiated elements:
+
+**The engine (soma.sh):** a bash script (approximately 760 lines in version 0.4.1) that processes commands, communicates with APIs, manages conversation history, and applies the confirmation protocol.
+
+**The harness (soma.json):** a JSON file containing the system prompt, agent identity, behavior rules (including the Supervised Synapse), and model configuration.
+
+**The knowledge base (~/vault/SOMA/):** a folder and Markdown file structure that acts as external memory, organized into: 00_Entrada, 01_Caracter, 02_Conciencia, 03_Proyectos, 04_Sueños, 05_Salida, and 06_Archivo.
+
+This separation follows the philosophy of Pan et al. (2026): the engine executes, the harness defines, the knowledge base persists.
+
+Each API query assembles a message in the following order:
+
+```
+[system_prompt] + [user_context] + [project?] + [session_memory?] + [history] + [user_message]
+```
+
+The history is limited to the last 10 turns to prevent degradation from context rot [1].
+
+### 3.1 Main Commands
+
+| Flag | Alias | Function |
+|------|-------|----------|
+| --web | --web | Natural language web search (Groq compound-beta) |
+| --extraer URL | --ext | Extracts content from a URL |
+| --buscar TERM | --bus | Scans the vault for a term |
+| --conectar | --con | Injects text from pipe (stdin) |
+| --unir FILE... | --uni | Injects one or more files as context |
+| --guardar | --gua | Saves response to 05_Salida/ |
+| --registrar PATH | --reg | Writes a supervised file to a specific path |
+| --cerrar | --cer | Generates a session closing document |
+| --reiniciar | --rei | Clears conversation history |
+| --resumir | --res | Summarizes current history without closing it |
+| --recordar | --rec | Loads the last session closing as context |
+| --modo PROFILE | --mod | Switches active profile |
+| --proyecto NAME | --pro | Injects project context |
+| --ayuda | --ayu | Displays this help |
+
+### 3.2 Operation Flow
+
+When the user runs SOMA with a query and its corresponding flags, the engine (soma.sh) automatically loads two files: the harness (soma.json), which defines the agent's identity and rules, and the conversation history (soma_history.json), which contains the last 10 turns. If the user has included context flags (--buscar, --unir, --conectar, --recordar), the engine also accesses the vault and extracts the requested information. With all that material assembled, it builds the message and sends it to the API.
+
+The API returns a response that the agent presents to the user. If that response includes links to vault documents ([[document_name]]), the Supervised Synapse is triggered: the agent implicitly asks *Approve synapse [[document_name]]? [Y/n]* and waits for confirmation. If the user approves, the proposed connection is recorded in 02_Conciencia/sesiones/sinapsis_log.txt. If rejected, it is discarded. In either case, the cycle may continue with a new query.
+
+---
+
+## 4. Three-Layer Temporary Memory
+
+SOMA organizes its memory into four types, following a structure similar to what Google describes for Gemini (Chavan, 2026), though with fundamental differences in user control:
+
+**Short-term layer:** history of the current session (last 10 turns). Stored in soma_history.json and cleared with --reiniciar. Equivalent to Gemini's *Raw data* concept: ephemeral working memory, active only during the session.
+
+**Medium-term layer:** session closings. When --cerrar is executed, SOMA generates a structured document that includes a summary, new concepts, decisions made, open tensions, and the next step. In the following session, --recordar injects it as context, achieving continuity without reprocessing the entire history. Equivalent to Gemini's *user_context*, with a critical difference: in Gemini, that summary is generated by the system automatically and opaquely; in SOMA, it is generated by the agent under the user's explicit supervision.
+
+**Long-term layer (designed, not yet implemented):** semantic search via embeddings. The plan is to use a vector index (R + SQLite) and a free endpoint. In the meantime, --buscar uses grep for exact-word search. Equivalent to *Semantic Memory* in Google Research terminology.
+
+**Procedural memory:** the agent's rules, identity, and behavior are defined in soma.json. The agent "knows how to behave" without the user having to instruct it at every session. Equivalent to Google Research's *Procedural Memory*.
+
+The following table summarizes the equivalences:
+
+| Google Concept | SOMA Equivalent | Implementation |
+|----------------|-----------------|----------------|
+| Raw data / Session | Short-term layer | soma_history.json (last 10 turns) |
+| user_context | Medium-term layer | Session closings (--cerrar / --recordar) |
+| Semantic Memory | Long-term layer | Embeddings (designed, not implemented — currently grep) |
+| Procedural Memory | Behavior harness | soma.json (rules, identity, behavior) |
+| Memory Bank | Vault | ~/vault/SOMA/ (persistent cross-session storage) |
+
+The most important difference from Gemini is not technical but a matter of design: in SOMA, no memory layer is built without explicit user intervention. The vault does not write itself. Session closings are generated when the user requests them and saved only if the user approves them. That difference is the Supervised Synapse.
+
+---
+
+## 5. Supervised Synapse
+
+Supervised Synapse is the central design principle of SOMA: no connection between the agent and the knowledge base occurs without explicit user intervention. It is expressed in two moments:
+
+**Context loading:** the user decides what information the agent receives before each query, through explicit flags. The agent does not access the vault on its own initiative.
+
+**Writing to the vault:** when the agent's response includes connections to vault documents ([[document_name]]), the confirmation protocol is triggered. The script displays:
+
+```
+Approve synapse [[document_name]]? [Y/n]:
+```
+
+If the user approves, the proposed connection is recorded in 02_Conciencia/sesiones/sinapsis_log.txt. If rejected, it is discarded. In either case, the cycle may continue with a new query.
+
+This mechanism makes the user the ultimate guardian of their knowledge. It is not about trusting the agent, but about making trust irrelevant to the vault's integrity. The agent proposes, the user decides.
+
+Supervised Synapse is not a security patch tacked on at the end of the design. It is a fundamental architectural decision: personal knowledge is constituted in the human-agent interaction; it is not a product that the agent generates on its own.
+
+---
+
+## 6. Discussion
+
+### 6.1 SOMA as a Minimal Implementation of the NLAH Paradigm
+
+The work of Pan et al. (2026) demonstrated the viability of natural-language harnesses with state-of-the-art cloud models. SOMA takes the same idea to the opposite extreme: a nearly decade-old laptop, command-line tools, and free APIs. The key decisions—bash as the engine, grep for retrieval, a 10-turn limit, session closings as cross-session memory—are not temporary concessions waiting to be replaced; they are deliberate design choices that prioritize auditability, portability, and minimal resource consumption.
+
+### 6.2 What Does Individual Sovereignty Mean?
+
+We define individual sovereignty over the agent as:
+
+- Data resides on hardware the user owns.
+- All code is free and can be audited.
+- There is no vendor lock-in at the data layer — the vault is plain Markdown.
+- Zero economic cost.
+
+SOMA meets all four criteria. However, sovereignty is partial as long as inference is performed on third-party servers. Although data is not stored persistently under Groq's current terms, every query leaves the user's machine. The design does not prevent using a local model in the future — in fact, it is built with that in mind. We declare this limitation honestly.
+
+### 6.3 SOMA and Gemini: The Difference That Matters
+
+Gemini and SOMA implement comparable memory structures. But while Gemini builds the user's profile automatically and opaquely — the system decides what to remember, when, and how — SOMA inverts that relationship: the user decides what enters the vault, what gets connected, and what is discarded. This is not a difference of scale or technical capability. It is a difference of philosophy: who controls the knowledge.
+
+### 6.4 Current Limitations
+
+- **Semantic search layer not implemented:** exact-word search is insufficient for conceptual queries.
+- **Formal evaluation pending:** claims about utility and performance are currently qualitative and preliminary.
+- **Dependency on free APIs:** usage limits may change and free models may be discontinued.
+- **Language:** the vault and test queries are in Spanish. Reproducing the system in other languages requires adjusting the prompts.
+- **Hallucination without context:** when SOMA does not receive an explicit vault listing, it may propose connections to non-existent documents. The Supervised Synapse mitigates the consequences, but does not eliminate the problem at its source.
+
+---
+
+## 7. Conclusions
+
+SOMA demonstrates that it is possible to build a personal agent with persistent memory, defined identity, and explicit user control over knowledge, running on nearly decade-old hardware, with standard Linux tools and zero cost. It implements the natural-language harness paradigm (Pan et al., 2026) at the most modest end of the resource spectrum.
+
+The central contribution of this work is the Supervised Synapse protocol: an architectural guarantee that no modification to the knowledge base occurs without explicit user confirmation, expressed in two moments — context loading and writing to the vault. It is not a security mechanism added as an afterthought; it is a design decision that defines the relationship between the agent and its user.
+
+SOMA does not compete with large AI systems in inference capacity or scale. It competes on different ground: transparency, auditability, and individual sovereignty. For those who research or produce knowledge from peripheral economies, without institutional infrastructure or budget for specialized hardware, SOMA offers a concrete and honest foundation for building.
+
+The project is in active development. This article is open documentation for anyone who wishes to explore, critique, or adapt these ideas.
+
+---
+
+## 8. Acknowledgments
+
+Developed in conversation with Claude Sonnet 4.6 (Anthropic) as a development companion. The intellectual authorship and all design decisions belong to the author.
+
+---
+
+## 9. References
+
+[1] Hong, K., Troynikov, A., & Huber, J. (2025). Context Rot: How Increasing Input Tokens Impacts LLM Performance. Chroma Research. https://research.trychroma.com/context-rot
+
+[2] Pan, L., Zou, L., Guo, S., Ni, J., & Zheng, H.-T. (2026). Natural-Language Agent Harnesses. arXiv:2603.25723.
+
+[3] Lewis, P., et al. (2021). Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks. arXiv:2005.11401.
+
+[4] Zhang, H., et al. (2026). MemSkill: Learning and Evolving Memory Skills for Self-Evolving Agents. arXiv:2602.02474.
+
+[5] Sun, Q., et al. (2025). Docs2KG: Unified Knowledge Graph Construction from Heterogeneous Documents. ACM WWW 2025. https://dl.acm.org/doi/10.1145/3701716.3715309
+
+[6] Harvard Business Review Analytic Services. (2025). AI Agent Trust Report. Fortune, Dec 9, 2025. https://fortune.com/2025/12/09/harvard-business-review-survey-only-6-percent-companies-trust-ai-agents/
+
+[7] ITBrief. (2025). Survey finds slow adoption of autonomous AI agents in enterprises. https://itbrief.news/story/survey-finds-slow-adoption-of-autonomous-ai-agents-in-enterprises
+
+[8] Ahrens, S. (2022). How to Take Smart Notes (2nd ed.). Sönke Ahrens.
+
+[9] Chavan, R. (2026). Inside Gemini's Memory: Context, User Profiles, and Personalization. Medium, February 2026. https://medium.com/@rushikeshchavan_99600/inside-geminis-memory-context-user-profiles-and-personalization-87bc1ae4ba18
+
+
 # SOMA: Sistema de Orientación de Memoria Activa en Lenguaje Natural para Hardware Restringido
 
 **Juan José Arellano**  
